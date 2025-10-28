@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ROS 2 Graph Viewer</title>
+    <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+    <script src="https://unpkg.com/cytoscape-svg@0.4.0/cytoscape-svg.js"></script>
+    <style>
+        /* CSSスタイル: ユーザーの要望により、初期値 (800px) を維持 */
+        #cy { width: 100%; height: 800px; display: block; border: 1px solid #ddd; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f9; }
+        .controls { margin-bottom: 20px; background-color: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        #details-panel { border: 1px solid #ccc; background-color: #e9ecef; padding: 10px; margin-top: 10px; white-space: pre-wrap; height: 200px; overflow: auto; border-radius: 4px; font-family: monospace; font-size: 12px; }
+        button { padding: 8px 15px; background-color: #1E90FF; color: white; border: none; border-radius: 4鑿px; cursor: pointer; font-size: 14px; }
+        button:hover { background-color: #1c7ed6; }
+    </style>
+</head>
+<body>
+
+    <h1>ROS 2 Graph Viewer (Jinja2 Generated)</h1>
+
+    <div class="controls">
+        <button id="export-svg-btn">Export as SVG</button>
+        <div id="details-panel">
+            クリックした要素（ノード、トピック）の詳細情報がここに表示されます。
+        </div>
+    </div>
+
+    <div id="cy"></div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+
+            // Dagre レイアウトを登録
+            if (typeof cytoscape.use === 'function' && typeof cytoscapeDagre === 'function') {
+                cytoscape.use(cytoscapeDagre);
+                console.log("Dagre layout successfully registered.");
+            } else {
+                console.error("Failed to register Dagre. Falling back to default 'cose'.");
+            }
+
+            // SVGエクスポート拡張を登録 
+            if (typeof cytoscape.use === 'function' && typeof cytoscapeSvg === 'function') {
+                cytoscape.use(cytoscapeSvg);
+                console.log("SVG extension successfully registered.");
+            } else {
+                console.error("Failed to register SVG extension. SVG export functionality may be unavailable.");
+            }
+
+            // --- データの注入 (Jinja2によってここが置き換えられます) ---
+            const elementsData = {{ elements_data | tojson }};
+            // ---------------------------------------------------------
+
+            let layoutToUse = (typeof cytoscapeDagre === 'function') ? 'dagre' : 'cose';
+
+            // === Cytoscape.jsの初期化 ===
+            let cy = cytoscape({
+                container: document.getElementById('cy'),
+                // ここで注入されたデータを使用
+                elements: elementsData.elements,
+
+                // レイアウト設定: ノード間隔は初期値(50)を維持
+                layout: {
+                    name: layoutToUse,
+                    rankDir: 'TB', // Top to Bottom (上から下へ)
+                    padding: 50,
+                    nodeDimensionsIncludeLabels: true,
+                },
+
+                // 💥 修正点：スタイル設定 💥
+                style: [
+                    // ノードのスタイル
+                    { selector: '.ros2_node', style: { 'background-color': '#1E90FF', 'label': 'data(label)', 'text-valign': 'center', 'color': '#fff', 'text-outline-color': '#000', 'text-outline-width': 1, 'shape': 'round-rectangle', 'width': 'label', 'height': 40, 'padding': '10px' } },
+                    
+                    // 💥 修正点: トピックノードのスタイルを復活 💥
+                    { selector: '.ros2_topic', style: { 'background-color': '#3CB371', 'label': 'data(label)', 'text-valign': 'center', 'color': '#fff', 'shape': 'ellipse', 'width': 'label', 'height': 30, 'padding': '10px' } },
+
+                    { selector: 'node[label]', style: { 'min-width': '60px', 'text-wrap': 'wrap', 'text-max-width': '80px', 'font-size': '10px' } },
+                    
+                    // エッジのスタイル: ラベルを publish/subscribe に戻し、curve-style を bezier に戻す 
+                    { selector: '.edge_topic_pub, .edge_topic_sub', style: { 
+                        'width': 3, 
+                        'line-color': '#3CB371', 
+                        'target-arrow-color': '#3CB371', 
+                        'target-arrow-shape': 'triangle', 
+                        'curve-style': 'bezier', // 💥 修正点: bezier に戻す 💥
+                        'label': 'data(label)', // 💥 修正点: publish/subscribe に戻す 💥
+                        'font-size': '10px',      
+                        'text-outline-color': '#fff',
+                        'text-outline-width': 2 
+                    } },
+                ]
+            });
+
+            // --- 💥 修正点：インタラクティブ性の実装 (クリックコールバック) 💥 ---
+            
+            // ノードをクリックした時の処理 (ros2_node または ros2_topic)
+            cy.on('tap', 'node', function(evt){
+                let element = evt.target;
+                let data = element.data();
+                
+                let typeLabel = data.ros2_type === 'node' ? 'ノード' : 'トピック';
+                let details = data.details ? JSON.stringify(data.details, null, 2) : 
+                              `ID: ${data.id}\nROS2 Type: ${data.ros2_type}\n(詳細データなし)`;
+
+                let output = `--- [${typeLabel}: ${data.label}] ---\nID: ${data.id}\n--------------------\n${details}`;
+
+                document.getElementById('details-panel').textContent = output;
+            });
+            
+            // エッジ (矢印) をクリックした時の処理
+            cy.on('tap', 'edge', function(evt){
+                let element = evt.target;
+                let data = element.data();
+                
+                // エッジの詳細データ (ここでは接続情報自体)
+                let details = data.details ? JSON.stringify(data.details, null, 2) : 
+                              `ID: ${data.id}\nROS2 Type: ${data.ros2_type}\n(詳細データなし)`;
+
+                let output = `--- [接続: ${data.label}] ---\n通信元: ${data.source}\n通信先: ${data.target}\n--------------------\n${details}`;
+
+                document.getElementById('details-panel').textContent = output;
+            });
+
+            // --- SVG出力の実装 ---
+            document.getElementById('export-svg-btn').addEventListener('click', function() {
+
+                if (typeof cy.svg !== 'function') {
+                    alert('エラー: SVGエクスポート機能が利用できません。ライブラリの読み込みを確認してください。');
+                    return;
+                }
+
+                // エクスポートサイズを2倍に拡大 (scale: 2)
+                let svg = cy.svg({ scale: 2, full: true });
+
+                // SVGデータをBlobに変換
+                let blob = new Blob([svg], { type: 'image/svg+xml' });
+                let url = URL.createObjectURL(blob);
+
+                // ダウンロードリンクを作成し、ダウンロードを開始
+                let a = document.createElement('a');
+                a.href = url;
+                a.download = 'ros2_graph_diagram.svg';
+                document.body.appendChild(a);
+                a.click();
+
+                // 後処理
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                setTimeout(() => {
+                    alert('ros2_graph_diagram.svgとしてエクスポートされました。');
+                }, 100);
+            });
+        });
+    </script>
+</body>
+</html>
