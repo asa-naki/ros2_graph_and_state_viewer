@@ -461,16 +461,17 @@
                       connectionMap[connData.name] = connData;
                   }
               }
-              const add_edge =(source_id, target_id, name, connType) => {
+              const add_edge =(source_id, target_id, name, connType, message_schema) => {
                   const edgeClass = connType === "topic" ? "ros2_topic_edge" : "ros2_service_edge";
                   edges.push({
                       group: 'edges',
                       data: {
-                          id: `e-${edges.length + 1}`,
+                          id: `${source_id} -> ${target_id}`,
                           source: source_id,
                           target: target_id,
                           label: name,
-                          ros2_type:connType == "topic"? "publish" : "call",
+                          details: message_schema.map(item => item.replaceAll('\t', '  ')),
+                          ros2_type:connType,
                       },
                       classes: edgeClass,
                   });
@@ -480,12 +481,13 @@
                   const connection = connectionMap[key];
                   const sourceCount = connection.from.length;
                   const targetCount = connection.to.length;
+                  const message = connection.type == "topic"? source_data.topics[key] : source_data.services[key];
                   if (sourceCount > 0 && targetCount > 0) {
                       for (let i_s = 0; i_s < sourceCount; i_s++) {
                           const source_id = connection.from[i_s];
                           for (let i_t = 0; i_t < targetCount; i_t++) {
                               const target_id = connection.to[i_t];
-                              add_edge(source_id, target_id, connection.name, connection.type);
+                              add_edge(source_id, target_id, connection.name, connection.type, message.message_schema);
                           }
                       }
                   } else if (sourceCount <= 0) {
@@ -493,14 +495,14 @@
                       connection.type == "topic"? add_topic(source_id) : add_service(source_id);
                       for (let i_t = 0; i_t < targetCount; i_t++) {
                           const target_id = connection.to[i_t];
-                          add_edge(source_id, target_id, connection.name, connection.type);
+                          add_edge(source_id, target_id, connection.name, connection.type, message.message_schema);
                       }
                   } else {
                       const target_id = connection.name;
                       connection.type == "topic"? add_topic(target_id) : add_service(target_id);
                       for (let i_s = 0; i_s < sourceCount; i_s++) {
                           const source_id = connection.from[i_s];
-                          add_edge(source_id, target_id, connection.name, connection.type);
+                          add_edge(source_id, target_id, connection.name, connection.type, message.message_schema);
                       }
                   }
               }
@@ -552,13 +554,17 @@
                   let element = evt.target;
                   let data = element.data();
 
+                  console.log('ros2_type:', data.ros2_type);
+
                   let typeLabel = '';
                   if (data.ros2_type === 'node') {
                       typeLabel = 'ROSノード';
-                  } else if (data.ros2_type === 'topic') {
+                  } else if (data.ros2_type == 'topic') {
                       typeLabel = 'トピック';
-                  } else if (data.ros2_type === 'package') {
-                      typeLabel = 'パッケージ/グループ (Rect)';
+                  } else if (data.ros2_type == 'service') {
+                      typeLabel = 'サービス';
+                  } else if (data.ros2_type == 'group') {
+                      typeLabel = 'name space';
                   } else {
                       typeLabel = '要素';
                   }
@@ -567,6 +573,29 @@
                                   `ID: ${data.id}\nROS2 Type: ${data.ros2_type}\n(詳細データなし)`;
 
                   let output = `--- [${typeLabel}: ${data.label}] ---\nID: ${data.id}\n--------------------\n${details}`;
+
+                  document.getElementById('details-panel').textContent = output;
+              });
+
+              globalObjects.cy.on('tap', 'edge', function(evt){
+                  let element = evt.target;
+                  let data = element.data();
+
+                  console.log('ros2_type:', data.ros2_type);
+
+                  let typeLabel = '';
+                  if (data.ros2_type == 'topic') {
+                      typeLabel = 'トピック';
+                  } else if (data.ros2_type == 'service') {
+                      typeLabel = 'サービス';
+                  } else {
+                      typeLabel = '要素';
+                  }
+
+                  let details = data.details ? JSON.stringify(data.details, null, 2) :
+                                  `ID: ${data.id}\nROS2 Type: ${data.ros2_type}\n(詳細データなし)`;
+
+                  let output = `--- [${typeLabel}: ${data.label}] ---\nDirection: ${data.id}\n--------------------\n${details}`;
 
                   document.getElementById('details-panel').textContent = output;
               });
