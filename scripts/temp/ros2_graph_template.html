@@ -271,6 +271,7 @@
                   new RegExp('/rosapi'),
               ],
               current_filtered_data: null,
+              current_selected_node_id: null,
           };
 
           function create_diagram(source) {
@@ -570,7 +571,6 @@
               });
 
               const contextMenu = document.getElementById('context-menu');
-              let currentSelectedNodeId = null; // 右クリックされたノードのIDを保持
 
               // 1. ノードに対する右クリック (cxttap) イベント処理
               globalObjects.cy.on('cxttap', 'node', function(evt) {
@@ -585,7 +585,7 @@
                       return;
                   }
 
-                  currentSelectedNodeId = nodeId;
+                  globalObjects.current_selected_node_id = nodeId;
 
                   // メニュー項目に表示するノード名を一時的に設定
                   document.getElementById('add-include-menu').textContent = `➡️「含める」に ${nodeLabel} を追加`;
@@ -599,52 +599,6 @@
               // 2. グラフ上の何もない場所を右クリックした場合、メニューを非表示に
               globalObjects.cy.on('cxttap', function(evt) {
                   if (evt.target === globalObjects.cy) {
-                      contextMenu.style.display = 'none';
-                  }
-              });
-
-              // 3. メニュー項目のクリック処理
-
-              // 「含めるパターン」に追加
-              document.getElementById('add-include-menu').addEventListener('click', function() {
-                  if (currentSelectedNodeId) {
-                      // Node IDを正規表現にエスケープし、全体マッチのパターンを作成
-                      // Node ID (e.g., /my_robot/sensor_node) をそのままパターンとして追加
-                      const pattern = currentSelectedNodeId;
-
-                      try {
-                          const newRegex = new RegExp(pattern);
-                          globalObjects.include_nodes.push(newRegex);
-                          renderIncludeFilterList(); // リストを更新
-                          redraw_graph(); // グラフを再描画
-                      } catch (e) {
-                          alert(`エラー: 無効な正規表現です ${e.message}`);
-                      }
-                  }
-                  contextMenu.style.display = 'none';
-              });
-
-              // 「除外するパターン」に追加
-              document.getElementById('add-exclude-menu').addEventListener('click', function() {
-                  if (currentSelectedNodeId) {
-                      const pattern = currentSelectedNodeId;
-
-                      try {
-                          const newRegex = new RegExp(pattern);
-                          globalObjects.exclude_nodes.push(newRegex);
-                          renderExcludeFilterList(); // リストを更新
-                          redraw_graph(); // グラフを再描画
-                      } catch (e) {
-                          alert(`エラー: 無効な正規表現です ${e.message}`);
-                      }
-                  }
-                  contextMenu.style.display = 'none';
-              });
-
-              // 4. グローバルな左クリックでメニューを非表示に
-              document.addEventListener('click', function(e) {
-                  // クリックがメニュー自体でなければ非表示にする
-                  if (!contextMenu.contains(e.target) && e.button === 0) {
                       contextMenu.style.display = 'none';
                   }
               });
@@ -902,6 +856,51 @@
       			}
       	});
 
+        const contextMenu = document.getElementById('context-menu');
+
+        // 1. メニュー項目のクリック処理
+
+        // 「含めるパターン」に追加
+        document.getElementById('add-include-menu').addEventListener('click', function() {
+            const currentSelectedNodeId = globalObjects.current_selected_node_id;
+            if (currentSelectedNodeId) {
+                const pattern = currentSelectedNodeId;
+                try {
+                    const newRegex = new RegExp(pattern);
+                    globalObjects.include_nodes.push(newRegex);
+                    renderIncludeFilterList();
+                    redraw_graph();
+                } catch (e) {
+                    alert(`エラー: 無効な正規表現です ${e.message}`);
+                }
+            }
+            contextMenu.style.display = 'none';
+        });
+
+        // 「除外するパターン」に追加
+        document.getElementById('add-exclude-menu').addEventListener('click', function() {
+            const currentSelectedNodeId = globalObjects.current_selected_node_id;
+            if (currentSelectedNodeId) {
+                const pattern = currentSelectedNodeId;
+
+                try {
+                    const newRegex = new RegExp(pattern);
+                    globalObjects.exclude_nodes.push(newRegex);
+                    renderExcludeFilterList();
+                    redraw_graph();
+                } catch (e) {
+                    alert(`エラー: 無効な正規表現です ${e.message}`);
+                }
+            }
+            contextMenu.style.display = 'none';
+        });
+
+        // 2. グローバルな左クリックでメニューを非表示に
+        document.addEventListener('click', function(e) {
+            if (!contextMenu.contains(e.target) && e.button === 0) {
+                contextMenu.style.display = 'none';
+            }
+        });
       	// 初期リスト描画
       	renderExcludeFilterList();
 
