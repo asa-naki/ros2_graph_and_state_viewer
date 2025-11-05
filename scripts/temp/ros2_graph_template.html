@@ -367,6 +367,7 @@
                                   // label: is_node? topic.name : path_name,
                                   label: path_name,
                                   parent: parent? parent : undefined,
+                                  msg_type: is_node? topic.type : undefined,
                                   details: is_node? topic.message_schema.map(item => item.replaceAll('\t', '  ')) : undefined,
                                   ros2_type: is_node? "topic" : "group",
                               },
@@ -397,6 +398,7 @@
                                   // label: is_node? sevice.name : path_name,
                                   label: path_name,
                                   parent: parent? parent : undefined,
+                                  msg_type: is_node? sevice.type : undefined,
                                   details: is_node? sevice.message_schema.map(item => item.replaceAll('\t', '  ')) : undefined,
                                   ros2_type: is_node? "service" : "group",
                               },
@@ -461,7 +463,7 @@
                       connectionMap[connData.name] = connData;
                   }
               }
-              const add_edge =(source_id, target_id, name, connType, message_schema) => {
+              const add_edge =(source_id, target_id, name, connType, message_schema, msg_type) => {
                   const edgeClass = connType === "topic" ? "ros2_topic_edge" : "ros2_service_edge";
                   edges.push({
                       group: 'edges',
@@ -470,6 +472,7 @@
                           source: source_id,
                           target: target_id,
                           label: name,
+                          msg_type: msg_type,
                           details: message_schema.map(item => item.replaceAll('\t', '  ')),
                           ros2_type:connType,
                       },
@@ -487,7 +490,7 @@
                           const source_id = connection.from[i_s];
                           for (let i_t = 0; i_t < targetCount; i_t++) {
                               const target_id = connection.to[i_t];
-                              add_edge(source_id, target_id, connection.name, connection.type, message.message_schema);
+                              add_edge(source_id, target_id, connection.name, connection.type, message.message_schema, message.type);
                           }
                       }
                   } else if (sourceCount <= 0) {
@@ -495,14 +498,14 @@
                       connection.type == "topic"? add_topic(source_id) : add_service(source_id);
                       for (let i_t = 0; i_t < targetCount; i_t++) {
                           const target_id = connection.to[i_t];
-                          add_edge(source_id, target_id, connection.name, connection.type, message.message_schema);
+                          add_edge(source_id, target_id, connection.name, connection.type, message.message_schema, message.type);
                       }
                   } else {
                       const target_id = connection.name;
                       connection.type == "topic"? add_topic(target_id) : add_service(target_id);
                       for (let i_s = 0; i_s < sourceCount; i_s++) {
                           const source_id = connection.from[i_s];
-                          add_edge(source_id, target_id, connection.name, connection.type, message.message_schema);
+                          add_edge(source_id, target_id, connection.name, connection.type, message.message_schema, message.type);
                       }
                   }
               }
@@ -572,7 +575,7 @@
                   let details = data.details ? JSON.stringify(data.details, null, 2) :
                                   `ID: ${data.id}\nROS2 Type: ${data.ros2_type}\n(詳細データなし)`;
 
-                  let output = `--- [${typeLabel}: ${data.label}] ---\nID: ${data.id}\n--------------------\n${details}`;
+                  let output = `--- [${typeLabel}: ${data.label}] ---\nID: ${data.id}\n${(data.ros2_type == 'topic' || data.ros2_type == 'service')?"Type: " + data.msg_type + "\n" : ""}--------------------\n${details}`;
 
                   document.getElementById('details-panel').textContent = output;
               });
@@ -595,7 +598,7 @@
                   let details = data.details ? JSON.stringify(data.details, null, 2) :
                                   `ID: ${data.id}\nROS2 Type: ${data.ros2_type}\n(詳細データなし)`;
 
-                  let output = `--- [${typeLabel}: ${data.label}] ---\nDirection: ${data.id}\n--------------------\n${details}`;
+                  let output = `--- [${typeLabel}: ${data.label}] ---\nDirection: ${data.id}\n${(data.ros2_type == 'topic' || data.ros2_type == 'service')?"Type: " + data.msg_type + "\n" : ""}--------------------\n${details}`;
 
                   document.getElementById('details-panel').textContent = output;
               });
