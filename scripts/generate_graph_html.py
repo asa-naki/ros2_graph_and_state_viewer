@@ -20,7 +20,7 @@ def main():
    with open(os.path.abspath(os.path.join(base, './temp/ros2_graph_template.html')), 'r', encoding='utf-8') as fin:
       temp = Template(source=fin.read())
    output_str = temp.render(elements_data=source)
-   with open(os.path.join(save_dir, "output.html"), 'w', encoding='utf-8') as fout:
+   with open(os.path.join(save_dir, "index.html"), 'w', encoding='utf-8') as fout:
       fout.write(output_str)
 
 if __name__ == '__main__':

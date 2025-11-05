@@ -4,7 +4,7 @@
 
 このリポジトリは、実行中の ROS 2 システムのネットワーク状態（ノード、トピック、サービス、接続、パラメータ）を CLI ツール (ros2) を介して収集し、インタラクティブなウェブグラフとして可視化するためのツール群を提供します。
 
-- [Example](https://peeeechi.github.io/ros2_graph_and_state_viewer/)
+- [Example](https://peeeechi.github.io/ros2_graph_and_state_viewer/index.html)
 
 ![description.png](./docs/images/description.png)
 
