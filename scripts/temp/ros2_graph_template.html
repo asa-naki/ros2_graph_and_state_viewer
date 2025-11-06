@@ -116,13 +116,30 @@
         </div>
       </div>
 
-      <p>Export</p>
       <div class="filter-container">
-        <div class="filter-item">
-          <button id="export-svg-btn">Export as SVG</button>
+        <div class="filter-item" style="margin-top: 5px">
+          <p>Export</p>
+          <div class="filter-container">
+            <div class="filter-item">
+              <button id="export-svg-btn">Export as SVG</button>
+            </div>
+            <div class="filter-item">
+              <button id="export-json-btn">Export as JSON</button>
+            </div>
+          </div>
         </div>
-        <div class="filter-item">
-          <button id="export-json-btn">Export as JSON</button>
+
+        <div class="filter-item" style="margin-top: 5px">
+          <p>Edge Style</p>
+          <select
+            id="edge-style-select"
+            style="padding: 5px; margin-bottom: 20px"
+          >
+            <option value="bezier">bezier</option>
+            <option value="straight-triangle">straight-triangle</option>
+            <option value="round-segments">round-segments</option>
+            <option value="round-taxi">round-taxi</option>
+          </select>
         </div>
       </div>
     </div>
@@ -162,6 +179,7 @@
                 x: 0,
                 y: 0,
               },
+              edge_curve_style: 'bezier',
               style: [
                       // コンパウンドノード（Rectグループ）のスタイル
                       {
@@ -238,7 +256,6 @@
                         style: {
                             'width': 3,
                             'target-arrow-shape': 'triangle',
-                            'curve-style': 'bezier',
                             'label': 'data(label)',
                             'font-size': '14px',
                             'color': '#000000',
@@ -702,6 +719,35 @@
               });
           }
 
+          function updateEdgeStyle(styleValue) {
+              for (let i = 0; i < globalObjects.style.length; i++) {
+                  if (globalObjects.style[i].selector === 'edge') {
+                      globalObjects.style[i].style['curve-style'] = styleValue;
+                      break;
+                  }
+              }
+
+              // トピックエッジとサービスエッジも直線にする場合は 'straight' を使用
+              if (styleValue === 'straight-triangle') {
+                // 直線の場合、ターゲットの三角形の矢印形状を 'triangle-backwards' に設定
+                // (straightの場合、デフォルトの'triangle'は表示が不自然になりやすいため)
+                for (let i = 0; i < globalObjects.style.length; i++) {
+                    if (globalObjects.style[i].selector === '.ros2_topic_edge' || globalObjects.style[i].selector === '.ros2_service_edge') {
+                        globalObjects.style[i].style['target-arrow-shape'] = 'triangle-backwards';
+                    }
+                }
+                } else {
+                // それ以外の場合は通常の三角形
+                for (let i = 0; i < globalObjects.style.length; i++) {
+                    if (globalObjects.style[i].selector === '.ros2_topic_edge' || globalObjects.style[i].selector === '.ros2_service_edge') {
+                        globalObjects.style[i].style['target-arrow-shape'] = 'triangle';
+                    }
+                }
+              }
+
+              globalObjects.edge_curve_style = styleValue;
+          }
+
           function redraw_graph() {
               // 既存の要素データをコピー
               const all_elements = globalObjects.elements;
@@ -772,6 +818,7 @@
       			console.error("Failed to register SVG extension. SVG export functionality may be unavailable.");
       	}
 
+        updateEdgeStyle(globalObjects.edge_curve_style);
       	redraw_graph();
         const body = document.body;
         body.addEventListener("mousemove", function (event) {
@@ -871,6 +918,15 @@
       	// exclude filter ------------------------------------------------------------------------
       	const excludeRegexInput = document.getElementById('exclude-regex-input');
       	const addExcludePatternBtn = document.getElementById('add-exclude-regex-btn');
+
+
+        const edgeStyleSelect = document.getElementById('edge-style-select');
+
+        edgeStyleSelect.addEventListener('change', function() {
+            const newStyle = this.value;
+            updateEdgeStyle(newStyle); // スタイルを更新
+            redraw_graph(); // グラフを再描画
+        });
 
 
       	// パターンの追加
