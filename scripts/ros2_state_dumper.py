@@ -99,9 +99,29 @@ def get_python_type_name(value: Any) -> str:
         return "unknown"
 
 
+def flatten_dict(d: Dict[str, Any], parent_key: str = '') -> List[tuple[str, Any]]:
+    """
+    ネストされた辞書をドット記法でフラット化する。
+    
+    例: {'a': {'b': 1, 'c': 2}} -> [('a.b', 1), ('a.c', 2)]
+    """
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}.{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key))
+        else:
+            # Noneは空文字列に変換
+            if v is None:
+                v = ""
+            items.append((new_key, v))
+    return items
+
+
 def parse_param_dump_output(output: str, node_name: str) -> List[Dict[str, Any]]:
     """
     'ros2 param dump' の出力 (YAML形式) をパースし、パラメータリストを返す。
+    ネストされた辞書構造はドット記法で展開される。
     """
     parameters: List[Dict[str, Any]] = []
 
@@ -120,9 +140,14 @@ def parse_param_dump_output(output: str, node_name: str) -> List[Dict[str, Any]]
         if isinstance(node_params, dict) and 'ros__parameters' in node_params:
             ros_params = node_params['ros__parameters']
             if isinstance(ros_params, dict):
-                for param_name, param_value in ros_params.items():
+                # パラメータをフラット化
+                flattened = flatten_dict(ros_params)
+                for param_name, param_value in flattened:
+                    # Noneは空文字列として扱う
+                    if param_value is None:
+                        param_value = ""
                     param_type = get_python_type_name(param_value)
-                    param_value_str = str(param_value) if param_value is not None else "None"
+                    param_value_str = str(param_value)
                     parameters.append({
                         "name": param_name,
                         "value": param_value_str,
