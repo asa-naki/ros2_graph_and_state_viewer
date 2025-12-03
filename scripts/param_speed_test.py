@@ -1,20 +1,43 @@
 #!/usr/bin/env python3
 """
-ROS2パラメータ取得方法の速度比較テスト
+ROS2 state dumper パラメータ取得方法の速度比較テスト
 
-方法1: ros2 param list + ros2 param get (各パラメータごと)
-方法2: ros2 param dump (一括取得)
+2つの実装方法を直接実行して比較:
+- Method 1: ros2 param list + ros2 param get (個別取得)
+- Method 2: ros2 param dump (一括取得 + フラット化)
 """
 
+import json
 import subprocess
-import time
-import yaml
 import sys
 import os
+import re
+import yaml
+import time
+from typing import Dict, List, Any, Set
 
 
-def run_ros2_command(cmd_list):
-    """ROS2コマンドを実行"""
+IGNORE_SERVICE_NAMES = [
+    'describe_parameters',
+    'get_parameter_types',
+    'get_parameters',
+    'list_parameters',
+    'set_parameters',
+    'set_parameters_atomically',
+]
+
+IGNORE_TOPIC_NAMES = [
+    'parameter_events',
+]
+
+IGNORE_NODE_PATTERNS = [
+    r'.*_impl.*',
+    r'/_ros2cli_.*',
+]
+
+
+def run_ros2_command(cmd_list: List[str], timeout: int = 10) -> str | None:
+    """ROS 2のCLIコマンドを実行"""
     try:
         env = os.environ.copy()
         result = subprocess.run(
@@ -23,24 +46,52 @@ def run_ros2_command(cmd_list):
             capture_output=True,
             text=True,
             env=env,
-            timeout=10
+            timeout=timeout
         )
         return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        print(f"Error: {e.stderr}", file=sys.stderr)
-        return None
-    except subprocess.TimeoutExpired:
-        print(f"Command timed out: {' '.join(cmd_list)}", file=sys.stderr)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
         return None
 
 
-def method1_param_list_get(node_name):
-    """
-    方法1: ros2 param list で一覧を取得し、各パラメータをros2 param getで取得
-    """
-    parameters = {}
+# ============================================================================
+# Method 1: param list + param get (個別取得)
+# ============================================================================
+
+def parse_param_get_output(output: str) -> Dict[str, Any]:
+    """ros2 param getの出力をパース"""
+    param = {"value": None, "type": "unknown"}
     
-    # パラメータリストを取得
+    match_python = re.search(r'(String|Integer|Boolean|Double)\s+value\s+is:\s+(.*)', output, re.DOTALL | re.IGNORECASE)
+    if match_python:
+        value_type = match_python.group(1).lower()
+        value_str = match_python.group(2).strip()
+        param["type"] = value_type
+        if value_type == 'integer':
+            try: param["value"] = int(value_str)
+            except ValueError: param["value"] = value_str
+        elif value_type == 'double':
+            try: param["value"] = float(value_str)
+            except ValueError: param["value"] = value_str
+        elif value_type == 'boolean':
+            param["value"] = value_str.lower() == 'true'
+        else:
+            param["value"] = value_str
+        return param
+    
+    type_match = re.search(r'Type:\s+(\w+)', output, re.IGNORECASE)
+    value_match = re.search(r'Value:\s+(.*)', output, re.DOTALL)
+    
+    if type_match:
+        param["type"] = type_match.group(1).lower()
+    if value_match:
+        param["value"] = value_match.group(1).strip()
+    
+    return param
+
+
+def get_parameters_method1(node_name: str) -> List[Dict[str, Any]]:
+    """Method 1: param list + param getで個別取得"""
+    parameters = []
     param_list_raw = run_ros2_command(["ros2", "param", "list", node_name, "--include-hidden"])
     
     if param_list_raw:
@@ -50,134 +101,204 @@ def method1_param_list_get(node_name):
                 continue
             
             param_name = param_name_line.split(':')[0].strip()
-            
-            # 各パラメータの値を取得
             param_get_raw = run_ros2_command(["ros2", "param", "get", node_name, param_name])
             
             if param_get_raw:
-                parameters[param_name] = param_get_raw
+                parsed_param = parse_param_get_output(param_get_raw)
+                param_value_str = str(parsed_param["value"]) if parsed_param["value"] is not None else "None"
+                parameters.append({
+                    "name": param_name,
+                    "value": param_value_str,
+                    "type": parsed_param["type"]
+                })
     
     return parameters
 
 
-def method2_param_dump(node_name):
-    """
-    方法2: ros2 param dump で一括取得
-    """
-    parameters = {}
+# ============================================================================
+# Method 2: param dump (一括取得 + フラット化)
+# ============================================================================
+
+def get_python_type_name(value: Any) -> str:
+    """Python値から型名を取得"""
+    if isinstance(value, bool):
+        return "boolean"
+    elif isinstance(value, int):
+        return "integer"
+    elif isinstance(value, float):
+        return "double"
+    elif isinstance(value, str):
+        return "string"
+    elif isinstance(value, list):
+        return "array"
+    else:
+        return "unknown"
+
+
+def flatten_dict(d: Dict[str, Any], parent_key: str = '') -> List[tuple[str, Any]]:
+    """ネストされた辞書をドット記法でフラット化"""
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}.{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key))
+        else:
+            if v is None:
+                v = ""
+            items.append((new_key, v))
+    return items
+
+
+def get_parameters_method2(node_name: str) -> List[Dict[str, Any]]:
+    """Method 2: param dumpで一括取得 + フラット化"""
+    parameters = []
+    param_dump_raw = run_ros2_command(["ros2", "param", "dump", node_name, "--include-hidden-nodes"])
     
-    # パラメータを一括ダンプ (--include-hiddenオプションを追加)
-    dump_output = run_ros2_command(["ros2", "param", "dump", node_name, "--include-hidden"])
-    
-    if dump_output:
+    if param_dump_raw:
         try:
-            # YAMLをパース
-            yaml_data = yaml.safe_load(dump_output)
-            if yaml_data and node_name in yaml_data:
-                ros_params = yaml_data[node_name].get('ros__parameters', {})
-                parameters = ros_params
-        except yaml.YAMLError as e:
-            print(f"YAML parse error: {e}", file=sys.stderr)
+            data = yaml.safe_load(param_dump_raw)
+            if data is None:
+                return parameters
+            
+            node_params = data.get(node_name, data)
+            if isinstance(node_params, dict) and 'ros__parameters' in node_params:
+                ros_params = node_params['ros__parameters']
+                if isinstance(ros_params, dict):
+                    flattened = flatten_dict(ros_params)
+                    for param_name, param_value in flattened:
+                        if param_value is None:
+                            param_value = ""
+                        param_type = get_python_type_name(param_value)
+                        param_value_str = str(param_value)
+                        parameters.append({
+                            "name": param_name,
+                            "value": param_value_str,
+                            "type": param_type
+                        })
+        except yaml.YAMLError:
+            pass
     
     return parameters
+
+
+def should_skip_node(node_name: str) -> bool:
+    """ノードをスキップすべきかチェック"""
+    for pattern in IGNORE_NODE_PATTERNS:
+        if re.match(pattern, node_name):
+            return True
+    return False
+
+
+def check_node_param_service_available(node_name: str) -> bool:
+    """ノードのパラメータサービスが利用可能かチェック"""
+    result = run_ros2_command(["ros2", "param", "list", node_name], timeout=5)
+    return result is not None
 
 
 def main():
+    """メイン実行関数"""
+    print("=" * 70, file=sys.stderr)
+    print("ROS2 Parameter Retrieval Speed Comparison Test", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+    print(file=sys.stderr)
+    
     # ノードリストを取得
-    node_list_raw = run_ros2_command(["ros2", "node", "list"])
+    node_list_raw = run_ros2_command(["ros2", "node", "list", "-a"])
     if not node_list_raw:
-        print("No nodes found. Make sure ROS2 nodes are running.", file=sys.stderr)
+        print("Error: No nodes found", file=sys.stderr)
         sys.exit(1)
     
-    node_list = [n.strip() for n in node_list_raw.split('\n') if n.strip()]
+    node_list_all = [n.strip() for n in node_list_raw.split('\n') if n.strip()]
+    node_list_filtered = [
+        n for n in node_list_all 
+        if not n.startswith('/_ros2cli_') and n != '/ros2_state_yaml_dumper_node'
+    ]
     
-    # _ros2cliなどの内部ノードを除外
-    node_list_filtered = [n for n in node_list 
-                          if not n.startswith('/_ros2cli_') 
-                          and n != '/ros2_state_yaml_dumper_node']
+    total_nodes = len(node_list_filtered)
+    print(f"Found {total_nodes} nodes to test\n", file=sys.stderr)
     
-    if not node_list_filtered:
-        print("No valid nodes found for testing.", file=sys.stderr)
-        sys.exit(1)
+    # 結果を格納
+    results = {
+        "test_metadata": {
+            "timestamp": int(time.time() * 1000),
+            "total_nodes": total_nodes
+        },
+        "method1": {
+            "name": "param list + get (individual)",
+            "description": "Uses ros2 param list + ros2 param get for each parameter",
+            "total_time": 0,
+            "total_parameters": 0,
+            "nodes_tested": 0
+        },
+        "method2": {
+            "name": "param dump (batch + flatten)",
+            "description": "Uses ros2 param dump with YAML parsing and dict flattening",
+            "total_time": 0,
+            "total_parameters": 0,
+            "nodes_tested": 0
+        },
+        "comparison": {}
+    }
     
-    print("=" * 60)
-    print("ROS2 Parameter Retrieval Speed Comparison Test")
-    print("=" * 60)
-    print(f"\nFound {len(node_list_filtered)} nodes to test\n")
-    
-    total_time_method1 = 0
-    total_time_method2 = 0
-    total_params_method1 = 0
-    total_params_method2 = 0
-    
-    for node_name in node_list_filtered:
-        print(f"\nTesting node: {node_name}")
-        print("-" * 60)
+    # 各ノードでテスト
+    for i, node_name in enumerate(node_list_filtered):
+        progress = (i + 1) / total_nodes * 100
+        print(f"[{i+1}/{total_nodes}] ({progress:.0f}%) Testing: {node_name}", file=sys.stderr)
         
-        # 方法1: param list + param get
+        # スキップ判定
+        if should_skip_node(node_name):
+            print(f"  → Skipped (pattern matched)", file=sys.stderr)
+            continue
+        
+        if not check_node_param_service_available(node_name):
+            print(f"  → Skipped (service unavailable)", file=sys.stderr)
+            continue
+        
+        # Method 1
         start_time = time.time()
-        params1 = method1_param_list_get(node_name)
-        time_method1 = time.time() - start_time
+        params1 = get_parameters_method1(node_name)
+        time1 = time.time() - start_time
         
-        # 方法2: param dump
+        # Method 2
         start_time = time.time()
-        params2 = method2_param_dump(node_name)
-        time_method2 = time.time() - start_time
+        params2 = get_parameters_method2(node_name)
+        time2 = time.time() - start_time
         
-        num_params1 = len(params1)
-        num_params2 = len(params2)
+        results["method1"]["total_time"] += time1
+        results["method1"]["total_parameters"] += len(params1)
+        results["method1"]["nodes_tested"] += 1
         
-        total_time_method1 += time_method1
-        total_time_method2 += time_method2
-        total_params_method1 += num_params1
-        total_params_method2 += num_params2
+        results["method2"]["total_time"] += time2
+        results["method2"]["total_parameters"] += len(params2)
+        results["method2"]["nodes_tested"] += 1
         
-        print(f"Method 1 (param list + get): {time_method1:.3f}s - {num_params1} parameters")
-        print(f"Method 2 (param dump):       {time_method2:.3f}s - {num_params2} parameters")
+        print(f"  Method 1: {time1:.3f}s ({len(params1)} params)", file=sys.stderr)
+        print(f"  Method 2: {time2:.3f}s ({len(params2)} params)", file=sys.stderr)
         
-        # パラメータ数が異なる場合、差分を表示
-        if num_params1 != num_params2:
-            print(f"⚠️  Parameter count mismatch!")
-            params1_set = set(params1.keys())
-            params2_set = set(params2.keys())
-            
-            only_in_method1 = params1_set - params2_set
-            only_in_method2 = params2_set - params1_set
-            
-            if only_in_method1:
-                print(f"   Only in Method 1: {sorted(only_in_method1)}")
-            if only_in_method2:
-                print(f"   Only in Method 2: {sorted(only_in_method2)}")
-        
-        if time_method1 > 0 and time_method2 > 0:
-            speedup = time_method1 / time_method2
-            if speedup > 1:
-                print(f"→ Method 2 is {speedup:.2f}x faster")
-            else:
-                print(f"→ Method 1 is {1/speedup:.2f}x faster")
+        if len(params1) != len(params2):
+            print(f"  ⚠️  Parameter count mismatch: {len(params1)} vs {len(params2)}", file=sys.stderr)
     
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    print(f"Total nodes tested: {len(node_list_filtered)}")
-    print(f"\nMethod 1 (param list + get):")
-    print(f"  Total time: {total_time_method1:.3f}s")
-    print(f"  Total parameters: {total_params_method1}")
-    print(f"  Avg time per node: {total_time_method1/len(node_list_filtered):.3f}s")
+    # 比較結果を計算
+    time1_total = results["method1"]["total_time"]
+    time2_total = results["method2"]["total_time"]
     
-    print(f"\nMethod 2 (param dump):")
-    print(f"  Total time: {total_time_method2:.3f}s")
-    print(f"  Total parameters: {total_params_method2}")
-    print(f"  Avg time per node: {total_time_method2/len(node_list_filtered):.3f}s")
-    
-    if total_time_method1 > 0 and total_time_method2 > 0:
-        speedup = total_time_method1 / total_time_method2
-        print(f"\n{'='*60}")
-        if speedup > 1:
-            print(f"Method 2 (param dump) is {speedup:.2f}x FASTER overall")
+    if time1_total > 0 and time2_total > 0:
+        if time1_total > time2_total:
+            results["comparison"]["faster_method"] = "method2"
+            results["comparison"]["speedup"] = round(time1_total / time2_total, 2)
+            results["comparison"]["time_saved_seconds"] = round(time1_total - time2_total, 3)
+            results["comparison"]["time_saved_percent"] = round((time1_total - time2_total) / time1_total * 100, 1)
         else:
-            print(f"Method 1 (param list + get) is {1/speedup:.2f}x FASTER overall")
-        print(f"{'='*60}")
+            results["comparison"]["faster_method"] = "method1"
+            results["comparison"]["speedup"] = round(time2_total / time1_total, 2)
+            results["comparison"]["time_saved_seconds"] = round(time2_total - time1_total, 3)
+            results["comparison"]["time_saved_percent"] = round((time2_total - time1_total) / time2_total * 100, 1)
+    
+    # 結果を出力
+    print("\n" + "=" * 70, file=sys.stderr)
+    print("RESULTS", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+    print(json.dumps(results, indent=2))
 
 
 if __name__ == "__main__":
