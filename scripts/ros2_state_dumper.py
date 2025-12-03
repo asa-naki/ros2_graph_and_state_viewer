@@ -4,7 +4,8 @@ import sys
 import time
 import os
 import re
-from typing import Dict, List, Any
+import yaml
+from typing import Dict, List, Any, Set
 
 IGNORE_SERVICE_NAMES = [
     'describe_parameters',
@@ -19,8 +20,14 @@ IGNORE_TOPIC_NAMES = [
     'parameter_events',
 ]
 
+# param dumpでタイムアウトする可能性のあるノード名パターン
+IGNORE_NODE_PATTERNS = [
+    r'.*_impl.*',  # 内部実装ノード（例: transform_listener_impl, transform_listener_impl_6315ad640800）
+    r'/_ros2cli_.*',  # ROS 2 CLIの一時ノード
+]
 
-def run_ros2_command(cmd_list: List[str]) -> str | None:
+
+def run_ros2_command(cmd_list: List[str], timeout: int = 10) -> str | None:
     """
     ROS 2のCLIコマンドを実行し、標準出力を取得するヘルパー関数。
     """
@@ -32,11 +39,15 @@ def run_ros2_command(cmd_list: List[str]) -> str | None:
             capture_output=True,
             text=True,
             env=env,
-            timeout=10
+            timeout=timeout
         )
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
-        if "Node not found" not in e.stderr:
+        # interface showのパースエラーは簡潔に表示
+        if "interface" in cmd_list and "show" in cmd_list:
+            interface_type = cmd_list[-1] if len(cmd_list) > 0 else "unknown"
+            print(f"Warning: Failed to get schema for {interface_type}", file=sys.stderr)
+        elif "Node not found" not in e.stderr:
             print(f"Error running ROS 2 command: {' '.join(cmd_list)}", file=sys.stderr)
             print(f"Stderr: {e.stderr}", file=sys.stderr)
         return None
@@ -47,43 +58,115 @@ def run_ros2_command(cmd_list: List[str]) -> str | None:
         print(f"ROS 2 command timed out: {' '.join(cmd_list)}", file=sys.stderr)
         return None
 
-def parse_param_get_output(output: str) -> Dict[str, Any]:
+def should_skip_node_param_dump(node_name: str) -> bool:
     """
-    'ros2 param get' の出力をパースし、型と値を抽出する。
+    ノード名がparam dumpをスキップすべきパターンに一致するかチェック。
     """
-    param = {"value": None, "type": "unknown"}
+    for pattern in IGNORE_NODE_PATTERNS:
+        if re.match(pattern, node_name):
+            return True
+    return False
 
-    # 1. Pythonスタイルの出力 (型と値が一括で出ている形式) をチェック
-    match_python = re.search(r'(String|Integer|Boolean|Double)\s+value\s+is:\s+(.*)', output, re.DOTALL | re.IGNORECASE)
-    if match_python:
-        value_type = match_python.group(1).lower()
-        value_str = match_python.group(2).strip()
 
-        param["type"] = value_type
-        if value_type == 'integer':
-            try: param["value"] = int(value_str)
-            except ValueError: param["value"] = value_str
-        elif value_type == 'double':
-            try: param["value"] = float(value_str)
-            except ValueError: param["value"] = value_str
-        elif value_type == 'boolean':
-            param["value"] = value_str.lower() == 'true'
+def check_node_param_service_available(node_name: str) -> bool:
+    """
+    ノードのパラメータサービスが応答可能かを短いタイムアウトでチェック。
+    param listコマンドを5秒のタイムアウトで実行し、正常に応答するか確認する。
+    """
+    result = run_ros2_command(["ros2", "param", "list", node_name], timeout=5)
+    if result is None:
+        return False
+    # "Exception while calling service"のようなエラーがstderrに出ている場合もあるが、
+    # run_ros2_commandはstdoutのみを返すので、結果がNoneならエラーと判断
+    return True
+
+
+def get_python_type_name(value: Any) -> str:
+    """
+    Python値から型名を取得する。
+    """
+    if isinstance(value, bool):
+        return "boolean"
+    elif isinstance(value, int):
+        return "integer"
+    elif isinstance(value, float):
+        return "double"
+    elif isinstance(value, str):
+        return "string"
+    elif isinstance(value, list):
+        return "array"
+    else:
+        return "unknown"
+
+
+def parse_param_dump_output(output: str, node_name: str) -> List[Dict[str, Any]]:
+    """
+    'ros2 param dump' の出力 (YAML形式) をパースし、パラメータリストを返す。
+    """
+    parameters: List[Dict[str, Any]] = []
+
+    try:
+        data = yaml.safe_load(output)
+        if data is None:
+            return parameters
+
+        # ros2 param dump の出力形式: {node_name: {ros__parameters: {param1: value1, ...}}}
+        if node_name in data:
+            node_params = data[node_name]
         else:
-            param["value"] = value_str
-        return param
+            # ノード名がキーにない場合、直接ros__parametersがある可能性
+            node_params = data
 
-    # 2. 一般的な Type: / Value: の行をチェック
-    type_match = re.search(r'Type:\s+(\w+)', output, re.IGNORECASE)
-    value_match = re.search(r'Value:\s+(.*)', output, re.DOTALL)
+        if isinstance(node_params, dict) and 'ros__parameters' in node_params:
+            ros_params = node_params['ros__parameters']
+            if isinstance(ros_params, dict):
+                for param_name, param_value in ros_params.items():
+                    param_type = get_python_type_name(param_value)
+                    param_value_str = str(param_value) if param_value is not None else "None"
+                    parameters.append({
+                        "name": param_name,
+                        "value": param_value_str,
+                        "type": param_type
+                    })
+    except yaml.YAMLError as e:
+        print(f"Error parsing YAML for node {node_name}: {e}", file=sys.stderr)
 
-    if type_match:
-        param["type"] = type_match.group(1).lower()
+    return parameters
 
-    if value_match:
-        value_str = value_match.group(1).strip()
-        param["value"] = value_str
 
-    return param
+def get_component_info() -> tuple[Set[str], Set[str]]:
+    """
+    'ros2 component list' を実行し、コンテナ名とコンポーネントノード名のセットを返す。
+
+    Returns:
+        tuple[Set[str], Set[str]]: (コンテナ名のセット, コンポーネントノード名のセット)
+    """
+    container_nodes: Set[str] = set()
+    component_nodes: Set[str] = set()
+
+    # コンポーネントコンテナのリストを取得
+    component_list_raw = run_ros2_command(["ros2", "component", "list"])
+
+    if component_list_raw:
+        for line in component_list_raw.split('\n'):
+            line = line.rstrip()
+            if not line:
+                continue
+
+            # コンテナ名の行 (先頭がスペースでない)
+            if not line.startswith(' '):
+                container_name = line.strip()
+                container_nodes.add(container_name)
+                continue
+
+            # コンポーネントの行 (先頭がスペース)
+            # 形式: "  1  /namespace/node_name (package::ClassName)"
+            match = re.match(r'\s+\d+\s+(/[\w/]+)', line)
+            if match:
+                node_name = match.group(1)
+                component_nodes.add(node_name)
+
+    return container_nodes, component_nodes
 
 def parse_interface_schema(interface_type: str) -> List[str]:
     """
@@ -97,7 +180,8 @@ def parse_interface_schema(interface_type: str) -> List[str]:
             line = line.rstrip()
             trimmed_line_start = line.lstrip()
 
-            if not trimmed_line_start or trimmed_line_start.startswith('#'):
+            # 空行、#コメント、//コメントをスキップ
+            if not trimmed_line_start or trimmed_line_start.startswith('#') or trimmed_line_start.startswith('//'):
                 continue
 
             schema.append(line)
@@ -137,7 +221,6 @@ def collect_ros2_graph_data() -> Dict[str, Any]:
             node_list_filtered.append(n)
 
     total_nodes = len(node_list_filtered)
-    node_idx = 0
 
     # 2. トピックとサービスのリストを事前に取得 (接続情報構築のため)
     topic_list_raw = run_ros2_command(["ros2", "topic", "list", "-t"])
@@ -166,44 +249,38 @@ def collect_ros2_graph_data() -> Dict[str, Any]:
                     type_name = match.group(2)
                     discovered_services[name] = type_name
 
-    # 3. ノードごとの情報と接続の収集
+    # 3. コンポーネント情報の取得 (コンテナはparam dumpでタイムアウトするためスキップ)
+    print("Getting component info...", file=sys.stderr)
+    container_nodes, component_nodes = get_component_info()
+    print(f"Found {len(container_nodes)} container nodes, {len(component_nodes)} component nodes", file=sys.stderr)
+
+    # 4. ノードごとの情報と接続の収集
     for i, node_name in enumerate(node_list_filtered):
-        # ★ 修正2: 進捗情報の出力
+        # 進捗情報の出力
         processed_nodes = i + 1
         progress = (processed_nodes / total_nodes) * 100
         print(f"Processing node {processed_nodes}/{total_nodes} ({progress:.0f}%): {node_name}", file=sys.stderr)
 
-        node_id = f"node_{node_idx}"
-        node_idx += 1
+        node_id = f"node_{i}"
         node_name_to_id[node_name] = node_id
 
         # パス構築
         path_parts = [p for p in node_name.split('/') if p]
 
-        # パラメータの取得
+        # パラメータの取得 (ros2 param dump を使用)
+        # コンテナノードや特定パターンのノードはparam dumpでタイムアウトするためスキップ
         parameters: List[Dict[str, Any]] = []
-        param_list_raw = run_ros2_command(["ros2", "param", "list", node_name, "--include-hidden"])
+        if node_name in container_nodes:
+            print(f"  Skipping param dump for container node: {node_name}", file=sys.stderr)
+        elif should_skip_node_param_dump(node_name):
+            print(f"  Skipping param dump for pattern-matched node: {node_name}", file=sys.stderr)
+        elif not check_node_param_service_available(node_name):
+            print(f"  Skipping param dump for node with unavailable param service: {node_name}", file=sys.stderr)
+        else:
+            param_dump_raw = run_ros2_command(["ros2", "param", "dump", node_name, "--include-hidden-nodes"])
 
-        if param_list_raw:
-            for param_name_line in param_list_raw.split('\n'):
-                param_name_line = param_name_line.strip()
-                if not param_name_line or param_name_line.endswith(':'):
-                    continue
-
-                param_name = param_name_line.split(':')[0].strip()
-
-                param_get_raw = run_ros2_command(["ros2", "param", "get", node_name, param_name])
-
-                if param_get_raw:
-                    parsed_param = parse_param_get_output(param_get_raw)
-                    # 値を TypeScript スキーマに合わせて文字列に変換 (Noneでないことを確認)
-                    param_value_str = str(parsed_param["value"]) if parsed_param["value"] is not None else "None"
-
-                    parameters.append({
-                        "name": param_name,
-                        "value": param_value_str,
-                        "type": parsed_param["type"]
-                    })
+            if param_dump_raw:
+                parameters = parse_param_dump_output(param_dump_raw, node_name)
 
         # ノード情報の構築
         graph_data["nodes"][node_name] = {
@@ -257,7 +334,7 @@ def collect_ros2_graph_data() -> Dict[str, Any]:
                         "direction": "call"
                     })
 
-    # 4. トピック情報の構築 (メッセージスキーマの取得)
+    # 5. トピック情報の構築 (メッセージスキーマの取得)
     for name, type_name in discovered_topics.items():
         graph_data["topics"][name] = {
             "id": name,
@@ -266,7 +343,7 @@ def collect_ros2_graph_data() -> Dict[str, Any]:
             "message_schema": parse_interface_schema(type_name)
         }
 
-    # 5. サービス情報の構築 (メッセージスキーマの取得)
+    # 6. サービス情報の構築 (メッセージスキーマの取得)
     for name, type_name in discovered_services.items():
         graph_data["services"][name] = {
             "id": name,
